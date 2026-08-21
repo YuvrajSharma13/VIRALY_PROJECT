@@ -6,8 +6,8 @@ const cors = require('cors');
 const fs = require('fs/promises');
 const path = require('path');
 const { PDFParse } = require('pdf-parse');
-const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
+const Groq = require('groq-sdk');
 const { YoutubeTranscript } = require('youtube-transcript');
 const { getSubtitles } = require('youtube-caption-extractor');
 const { performance } = require('perf_hooks');
@@ -73,30 +73,30 @@ function isYouTubeUrl(value) {
 async function extractYouTubeContent(url, customInstructions = '') {
   const videoId = extractVideoId(url);
   if (!videoId) {
-    throw new Error('Please provide a valid public YouTube URL (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...).');
+    throw new Error('Please provide a valid public YouTube URL.');
   }
 
-  // Attempt 1: Fetch via YoutubeTranscript
+  // 1. Try YoutubeTranscript
   try {
     const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
     if (transcriptItems && transcriptItems.length > 0) {
       return transcriptItems.map((item) => item.text).join(' ');
     }
   } catch (err) {
-    console.warn(`YoutubeTranscript failed for ${videoId}: ${err.message}`);
+    console.warn(`YoutubeTranscript error: ${err.message}`);
   }
 
-  // Attempt 2: Fetch via youtube-caption-extractor
+  // 2. Try youtube-caption-extractor
   try {
     const captions = await getSubtitles({ videoID: videoId, lang: 'en' });
     if (captions && captions.length > 0) {
       return captions.map((item) => item.text).join(' ');
     }
   } catch (err) {
-    console.warn(`youtube-caption-extractor failed for ${videoId}: ${err.message}`);
+    console.warn(`youtube-caption-extractor error: ${err.message}`);
   }
 
-  // Attempt 3: Fetch video metadata and combine with context
+  // 3. Fallback: Video metadata
   let meta = null;
   try {
     const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
@@ -105,17 +105,17 @@ async function extractYouTubeContent(url, customInstructions = '') {
       meta = { title: data.title, author: data.author_name || 'YouTube Creator' };
     }
   } catch (err) {
-    console.warn(`Metadata fetch failed for ${videoId}: ${err.message}`);
+    console.warn(`Metadata fetch error: ${err.message}`);
   }
 
   if (meta) {
     if (customInstructions && customInstructions.trim()) {
       return `YouTube Video: "${meta.title}" by ${meta.author}.\n\nContext & Topic Details:\n${customInstructions.trim()}`;
     }
-    return `YouTube Video: "${meta.title}" by ${meta.author}.\n\nRepurpose social media content based on this video topic and theme.`;
+    return `YouTube Video: "${meta.title}" by ${meta.author}.\n\nRepurpose social media content based on this video topic.`;
   }
 
-  throw new Error('Could not extract captions for this video. Please provide some brief notes in the "Additional context" box or paste text in the Document tab.');
+  throw new Error('Could not extract captions for this video. Please provide some brief notes in the Additional context box.');
 }
 
 async function extractPdfText(dataUrl) {
@@ -194,42 +194,92 @@ ${sourceText}`;
 }
 
 async function generateAI({ prompt }) {
-  // 1. Try Groq if GROQ_API_KEY is provided
-  if (process.env.GROQ_API_KEY) {
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-    const completion = await groq.chat.completions.create({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content: 'You are VIRALY, an expert content repurposing engine. You craft high-converting, polished social media content strictly following the formatting instructions given.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 3000,
-    });
-    const content = completion.choices[0]?.message?.content?.trim();
-    if (content) return content;
-  }
+  const errors = [];
 
-  // 2. Try Gemini if GEMINI_API_KEY is provided
+  // --- 1. GEMINI ATTEMPTS (Preferred by user) ---
   if (process.env.GEMINI_API_KEY) {
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const model = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-    });
-    const content = response.text?.trim();
-    if (content) return content;
+    const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+
+    // 1a. Try ai.interactions.create with gemini-3.5-flash-lite
+    try {
+      if (ai.interactions && typeof ai.interactions.create === 'function') {
+        const res = await ai.interactions.create({
+          model: geminiModel,
+          input: [{ type: 'text', text: prompt }],
+        });
+        const content = (res.output_text || res.text || res.candidates?.[0]?.content?.parts?.[0]?.text)?.trim();
+        if (content) return content;
+      }
+    } catch (err) {
+      errors.push(`Gemini interactions error: ${err.message}`);
+    }
+
+    // 1b. Try ai.models.generateContent with specified model
+    try {
+      const res = await ai.models.generateContent({
+        model: geminiModel,
+        contents: prompt,
+      });
+      const content = res.text?.trim();
+      if (content) return content;
+    } catch (err) {
+      errors.push(`Gemini models (${geminiModel}) error: ${err.message}`);
+    }
+
+    // 1c. Try fallback models (gemini-2.0-flash / gemini-1.5-flash)
+    for (const fallbackModel of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
+      try {
+        const res = await ai.models.generateContent({
+          model: fallbackModel,
+          contents: prompt,
+        });
+        const content = res.text?.trim();
+        if (content) return content;
+      } catch (err) {
+        errors.push(`Gemini fallback (${fallbackModel}) error: ${err.message}`);
+      }
+    }
   }
 
-  throw new Error('No AI API Key provided. Please configure GROQ_API_KEY (free from console.groq.com) or GEMINI_API_KEY in your environment variables.');
+  // --- 2. GROQ ATTEMPTS (Ultra-fast fallback) ---
+  if (process.env.GROQ_API_KEY) {
+    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+    const groqModels = [
+      process.env.GROQ_MODEL,
+      'llama-3.1-8b-instant',
+      'llama3-70b-8192',
+      'llama3-8b-8192',
+      'mixtral-8x7b-32768',
+      'gemma2-9b-it'
+    ].filter(Boolean);
+
+    for (const model of groqModels) {
+      try {
+        const completion = await groq.chat.completions.create({
+          model,
+          messages: [
+            {
+              role: 'system',
+              content: 'You are VIRALY, an expert content repurposing engine. You craft high-converting, polished social media content strictly following the formatting instructions given.',
+            },
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          temperature: 0.7,
+          max_tokens: 3000,
+        });
+        const content = completion.choices[0]?.message?.content?.trim();
+        if (content) return content;
+      } catch (err) {
+        errors.push(`Groq (${model}) error: ${err.message}`);
+      }
+    }
+  }
+
+  throw new Error(`AI generation failed. Details: ${errors.join(' | ')}`);
 }
 
 app.post('/api/generate', async (req, res) => {
