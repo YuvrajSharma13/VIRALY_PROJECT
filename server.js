@@ -9,6 +9,7 @@ const { PDFParse } = require('pdf-parse');
 const Groq = require('groq-sdk');
 const { GoogleGenAI } = require('@google/genai');
 const { YoutubeTranscript } = require('youtube-transcript');
+const { getSubtitles } = require('youtube-caption-extractor');
 const { performance } = require('perf_hooks');
 
 const app = express();
@@ -46,26 +47,75 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/viraly')
   .then(() => console.log('MongoDB connected successfully.'))
   .catch((error) => console.warn(`MongoDB unavailable; falling back to local storage: ${error.message}`));
 
-function isYouTubeUrl(value) {
+function extractVideoId(value) {
   try {
     const url = new URL(value);
     const host = url.hostname.replace(/^www\./, '').toLowerCase();
-    return host === 'youtu.be' || host === 'youtube.com' || host === 'm.youtube.com';
+    if (host === 'youtu.be') {
+      return url.pathname.slice(1).split('?')[0].split('&')[0];
+    }
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (url.pathname.startsWith('/shorts/')) {
+        return url.pathname.replace('/shorts/', '').split('?')[0].split('&')[0];
+      }
+      return url.searchParams.get('v');
+    }
+    return null;
   } catch {
-    return false;
+    return null;
   }
 }
 
-async function extractYouTubeTranscript(url) {
-  try {
-    const transcriptItems = await YoutubeTranscript.fetchTranscript(url);
-    if (!transcriptItems || !transcriptItems.length) {
-      throw new Error('No transcript available for this YouTube video. Ensure it has public captions.');
-    }
-    return transcriptItems.map((item) => item.text).join(' ');
-  } catch (error) {
-    throw new Error(`Could not extract YouTube transcript: ${error.message}`);
+function isYouTubeUrl(value) {
+  return Boolean(extractVideoId(value));
+}
+
+async function extractYouTubeContent(url, customInstructions = '') {
+  const videoId = extractVideoId(url);
+  if (!videoId) {
+    throw new Error('Please provide a valid public YouTube URL (e.g. https://www.youtube.com/watch?v=... or https://youtu.be/...).');
   }
+
+  // Attempt 1: Fetch via YoutubeTranscript
+  try {
+    const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
+    if (transcriptItems && transcriptItems.length > 0) {
+      return transcriptItems.map((item) => item.text).join(' ');
+    }
+  } catch (err) {
+    console.warn(`YoutubeTranscript failed for ${videoId}: ${err.message}`);
+  }
+
+  // Attempt 2: Fetch via youtube-caption-extractor
+  try {
+    const captions = await getSubtitles({ videoID: videoId, lang: 'en' });
+    if (captions && captions.length > 0) {
+      return captions.map((item) => item.text).join(' ');
+    }
+  } catch (err) {
+    console.warn(`youtube-caption-extractor failed for ${videoId}: ${err.message}`);
+  }
+
+  // Attempt 3: Fetch video metadata and combine with context
+  let meta = null;
+  try {
+    const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
+    const data = await res.json();
+    if (data && data.title) {
+      meta = { title: data.title, author: data.author_name || 'YouTube Creator' };
+    }
+  } catch (err) {
+    console.warn(`Metadata fetch failed for ${videoId}: ${err.message}`);
+  }
+
+  if (meta) {
+    if (customInstructions && customInstructions.trim()) {
+      return `YouTube Video: "${meta.title}" by ${meta.author}.\n\nContext & Topic Details:\n${customInstructions.trim()}`;
+    }
+    return `YouTube Video: "${meta.title}" by ${meta.author}.\n\nRepurpose social media content based on this video topic and theme.`;
+  }
+
+  throw new Error('Could not extract captions for this video. Please provide some brief notes in the "Additional context" box or paste text in the Document tab.');
 }
 
 async function extractPdfText(dataUrl) {
@@ -206,7 +256,7 @@ app.post('/api/generate', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Please provide a valid public YouTube URL.' });
       }
       detectedSourceType = 'youtube';
-      sourceText = await extractYouTubeTranscript(sourceText);
+      sourceText = await extractYouTubeContent(sourceText, customInstructions);
     }
 
     if (sourceText.length > MAX_SOURCE_CHARACTERS) {
