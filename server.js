@@ -7,7 +7,6 @@ const fs = require('fs/promises');
 const path = require('path');
 const { PDFParse } = require('pdf-parse');
 const { GoogleGenAI } = require('@google/genai');
-const Groq = require('groq-sdk');
 const { YoutubeTranscript } = require('youtube-transcript');
 const { getSubtitles } = require('youtube-caption-extractor');
 const { performance } = require('perf_hooks');
@@ -83,7 +82,7 @@ async function extractYouTubeContent(url, customInstructions = '') {
       return transcriptItems.map((item) => item.text).join(' ');
     }
   } catch (err) {
-    console.warn(`YoutubeTranscript error: ${err.message}`);
+    console.warn(`YoutubeTranscript warning: ${err.message}`);
   }
 
   // 2. Try youtube-caption-extractor
@@ -93,10 +92,10 @@ async function extractYouTubeContent(url, customInstructions = '') {
       return captions.map((item) => item.text).join(' ');
     }
   } catch (err) {
-    console.warn(`youtube-caption-extractor error: ${err.message}`);
+    console.warn(`youtube-caption-extractor warning: ${err.message}`);
   }
 
-  // 3. Fallback: Video metadata
+  // 3. Metadata fallback
   let meta = null;
   try {
     const res = await fetch(`https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`);
@@ -105,7 +104,7 @@ async function extractYouTubeContent(url, customInstructions = '') {
       meta = { title: data.title, author: data.author_name || 'YouTube Creator' };
     }
   } catch (err) {
-    console.warn(`Metadata fetch error: ${err.message}`);
+    console.warn(`Metadata fetch warning: ${err.message}`);
   }
 
   if (meta) {
@@ -193,93 +192,43 @@ Source material:
 ${sourceText}`;
 }
 
-async function generateAI({ prompt }) {
-  const errors = [];
+async function generateWithGemini({ prompt }) {
+  if (!process.env.GEMINI_API_KEY) {
+    const error = new Error('GEMINI_API_KEY is missing. Please add GEMINI_API_KEY in your Render Environment Variables.');
+    error.statusCode = 503;
+    throw error;
+  }
 
-  // --- 1. GEMINI ATTEMPTS (Preferred by user) ---
-  if (process.env.GEMINI_API_KEY) {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-    const geminiModel = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const model = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
-    // 1a. Try ai.interactions.create with gemini-3.5-flash-lite
-    try {
-      if (ai.interactions && typeof ai.interactions.create === 'function') {
-        const res = await ai.interactions.create({
-          model: geminiModel,
-          input: [{ type: 'text', text: prompt }],
-        });
-        const content = (res.output_text || res.text || res.candidates?.[0]?.content?.parts?.[0]?.text)?.trim();
-        if (content) return content;
-      }
-    } catch (err) {
-      errors.push(`Gemini interactions error: ${err.message}`);
-    }
-
-    // 1b. Try ai.models.generateContent with specified model
-    try {
-      const res = await ai.models.generateContent({
-        model: geminiModel,
-        contents: prompt,
+  // 1. Try ai.interactions.create with gemini-3.5-flash-lite
+  try {
+    if (ai.interactions && typeof ai.interactions.create === 'function') {
+      const response = await ai.interactions.create({
+        model,
+        input: [{ type: 'text', text: prompt }],
       });
-      const content = res.text?.trim();
+      const content = (response.output_text || response.text || response.candidates?.[0]?.content?.parts?.[0]?.text)?.trim();
       if (content) return content;
-    } catch (err) {
-      errors.push(`Gemini models (${geminiModel}) error: ${err.message}`);
     }
-
-    // 1c. Try fallback models (gemini-2.0-flash / gemini-1.5-flash)
-    for (const fallbackModel of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
-      try {
-        const res = await ai.models.generateContent({
-          model: fallbackModel,
-          contents: prompt,
-        });
-        const content = res.text?.trim();
-        if (content) return content;
-      } catch (err) {
-        errors.push(`Gemini fallback (${fallbackModel}) error: ${err.message}`);
-      }
-    }
+  } catch (err) {
+    console.warn(`interactions.create fallback: ${err.message}`);
   }
 
-  // --- 2. GROQ ATTEMPTS (Ultra-fast fallback) ---
-  if (process.env.GROQ_API_KEY) {
-    const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
-    const groqModels = [
-      process.env.GROQ_MODEL,
-      'llama-3.1-8b-instant',
-      'llama3-70b-8192',
-      'llama3-8b-8192',
-      'mixtral-8x7b-32768',
-      'gemma2-9b-it'
-    ].filter(Boolean);
-
-    for (const model of groqModels) {
-      try {
-        const completion = await groq.chat.completions.create({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: 'You are VIRALY, an expert content repurposing engine. You craft high-converting, polished social media content strictly following the formatting instructions given.',
-            },
-            {
-              role: 'user',
-              content: prompt,
-            },
-          ],
-          temperature: 0.7,
-          max_tokens: 3000,
-        });
-        const content = completion.choices[0]?.message?.content?.trim();
-        if (content) return content;
-      } catch (err) {
-        errors.push(`Groq (${model}) error: ${err.message}`);
-      }
-    }
+  // 2. Try ai.models.generateContent with gemini-3.5-flash-lite
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: prompt,
+    });
+    const content = response.text?.trim();
+    if (content) return content;
+  } catch (err) {
+    console.warn(`models.generateContent fallback: ${err.message}`);
   }
 
-  throw new Error(`AI generation failed. Details: ${errors.join(' | ')}`);
+  throw new Error('Gemini returned an empty response or could not process the request. Check your GEMINI_API_KEY in Render.');
 }
 
 app.post('/api/generate', async (req, res) => {
@@ -315,7 +264,7 @@ app.post('/api/generate', async (req, res) => {
 
     const start = performance.now();
     const prompt = buildPrompt({ formats: activeFormats, tone, instructions: customInstructions.trim(), sourceText });
-    const content = await generateAI({ prompt });
+    const content = await generateWithGemini({ prompt });
     const latency = Math.round(performance.now() - start);
 
     const storage = await persistGeneration({
