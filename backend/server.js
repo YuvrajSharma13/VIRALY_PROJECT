@@ -29,6 +29,15 @@ app.use(cors({
 app.use(express.json({ limit: '30mb' }));
 app.use(express.urlencoded({ extended: true, limit: '30mb' }));
 
+// --- Mongoose Schemas ---
+const UserSchema = new mongoose.Schema({
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
+  password: { type: String, required: true },
+  name: { type: String, required: true, trim: true },
+  createdAt: { type: Date, default: Date.now },
+});
+const User = mongoose.models.User || mongoose.model('User', UserSchema);
+
 const PostSchema = new mongoose.Schema({
   userId: { type: String, required: true, index: true },
   sourceType: { type: String, default: 'text' },
@@ -45,6 +54,68 @@ const Post = mongoose.models.Post || mongoose.model('Post', PostSchema);
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/viraly')
   .then(() => console.log('MongoDB connected successfully.'))
   .catch((error) => console.warn(`MongoDB unavailable; falling back to local storage: ${error.message}`));
+
+// --- AUTHENTICATION ENDPOINTS (Cloud User Accounts) ---
+app.post('/api/auth/signup', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    if (!email || !password || !name) {
+      return res.status(400).json({ success: false, error: 'Name, email, and password are required.' });
+    }
+    const cleanEmail = email.toLowerCase().trim();
+    const cleanName = name.trim();
+
+    if (mongoose.connection.readyState === 1) {
+      const existing = await User.findOne({ email: cleanEmail });
+      if (existing) {
+        return res.status(400).json({ success: false, error: 'An account with this email already exists!' });
+      }
+      const user = await User.create({ email: cleanEmail, password, name: cleanName });
+      return res.json({
+        success: true,
+        user: { id: user._id, email: user.email, name: user.name },
+      });
+    } else {
+      // Fallback
+      return res.json({
+        success: true,
+        user: { id: cleanEmail, email: cleanEmail, name: cleanName },
+      });
+    }
+  } catch (error) {
+    console.error('Signup error:', error.message);
+    res.status(500).json({ success: false, error: error.message || 'Unable to create account.' });
+  }
+});
+
+app.post('/api/auth/signin', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password are required.' });
+    }
+    const cleanEmail = email.toLowerCase().trim();
+
+    if (mongoose.connection.readyState === 1) {
+      const user = await User.findOne({ email: cleanEmail });
+      if (!user || user.password !== password) {
+        return res.status(401).json({ success: false, error: 'Invalid email or password.' });
+      }
+      return res.json({
+        success: true,
+        user: { id: user._id, email: user.email, name: user.name },
+      });
+    } else {
+      return res.json({
+        success: true,
+        user: { id: cleanEmail, email: cleanEmail, name: cleanEmail.split('@')[0] },
+      });
+    }
+  } catch (error) {
+    console.error('Signin error:', error.message);
+    res.status(500).json({ success: false, error: 'Unable to sign in.' });
+  }
+});
 
 function extractVideoId(value) {
   try {
@@ -367,7 +438,7 @@ app.get('/api/analytics', async (req, res) => {
   }
 });
 
-// --- NEW: CALENDAR ACTIVITY MAP ENDPOINT ---
+// --- CALENDAR ACTIVITY MAP ENDPOINT ---
 app.get('/api/calendar', async (req, res) => {
   try {
     const { userId } = req.query;
@@ -415,7 +486,7 @@ app.get('/api/calendar', async (req, res) => {
   }
 });
 
-// --- NEW: AI CONTENT SCHEDULE SUGGESTIONS ENDPOINT ---
+// --- AI CONTENT SCHEDULE SUGGESTIONS ENDPOINT ---
 app.post('/api/calendar/suggest', async (req, res) => {
   try {
     const { userId } = req.body;

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
 export default function Login() {
   const navigate = useNavigate();
   
@@ -14,65 +16,76 @@ export default function Login() {
   const [focusedField, setFocusedField] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setErrorMessage("");
 
-    const existingUsers = JSON.parse(localStorage.getItem("viraly_users") || "[]");
-    
-    setTimeout(() => {
-      setLoading(false);
-
+    try {
       if (!isLogin) {
-        // --- SIGN UP LOGIC ---
+        // --- CLOUD SIGN UP ---
         if (!name.trim() || !email.trim() || !password.trim()) {
           setErrorMessage("Please fill in all fields.");
+          setLoading(false);
           return;
         }
 
-        const userExists = existingUsers.some(u => u.email.toLowerCase() === email.toLowerCase().trim());
-        if (userExists) {
-          setErrorMessage("An account with this email already exists!");
-          return;
+        const res = await fetch(`${API_URL}/api/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name.trim(),
+            email: email.trim(),
+            password: password
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Failed to create account.');
         }
 
-        const newUser = {
-          name: name.trim(),
-          email: email.trim().toLowerCase(),
-          password: password
-        };
-
-        existingUsers.push(newUser);
-        localStorage.setItem("viraly_users", JSON.stringify(existingUsers));
-        localStorage.setItem("userId", newUser.email);
-        localStorage.setItem("userEmail", newUser.email);
-        localStorage.setItem("userName", newUser.name);
+        // Save session locally on this device
+        localStorage.setItem("userId", data.user.email);
+        localStorage.setItem("userEmail", data.user.email);
+        localStorage.setItem("userName", data.user.name);
 
         setShowModal(false);
-        navigate("/dashboard", { state: { userName: newUser.name, userId: newUser.email } });
+        navigate("/dashboard", { state: { userName: data.user.name, userId: data.user.email } });
 
       } else {
-        // --- SIGN IN LOGIC ---
+        // --- CLOUD SIGN IN ---
         if (!email.trim() || !password.trim()) {
           setErrorMessage("Please enter both email and password.");
+          setLoading(false);
           return;
         }
 
-        const foundUser = existingUsers.find(u => u.email.toLowerCase() === email.toLowerCase().trim());
-
-        if (foundUser && foundUser.password === password) {
-          localStorage.setItem("userId", foundUser.email);
-          localStorage.setItem("userEmail", foundUser.email);
-          localStorage.setItem("userName", foundUser.name);
-
-          setShowModal(false);
-          navigate("/dashboard", { state: { userName: foundUser.name, userId: foundUser.email } });
-        } else {
-          setErrorMessage("Invalid email or password!");
+        const res = await fetch(`${API_URL}/api/auth/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email.trim(),
+            password: password
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Invalid email or password.');
         }
+
+        // Save session locally on this device
+        localStorage.setItem("userId", data.user.email);
+        localStorage.setItem("userEmail", data.user.email);
+        localStorage.setItem("userName", data.user.name);
+
+        setShowModal(false);
+        navigate("/dashboard", { state: { userName: data.user.name, userId: data.user.email } });
       }
-    }, 800);
+    } catch (err) {
+      setErrorMessage(err.message.includes('Failed to fetch') ? 'Cannot reach the backend server. Please try again in a moment.' : err.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openModal = (loginMode) => {
