@@ -55,7 +55,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/viraly')
   .then(() => console.log('MongoDB connected successfully.'))
   .catch((error) => console.warn(`MongoDB unavailable; falling back to local storage: ${error.message}`));
 
-// --- AUTHENTICATION ENDPOINTS (Cloud User Accounts) ---
+// --- AUTHENTICATION & USER PROFILE ENDPOINTS ---
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { email, password, name } = req.body;
@@ -76,7 +76,6 @@ app.post('/api/auth/signup', async (req, res) => {
         user: { id: user._id, email: user.email, name: user.name },
       });
     } else {
-      // Fallback
       return res.json({
         success: true,
         user: { id: cleanEmail, email: cleanEmail, name: cleanName },
@@ -114,6 +113,54 @@ app.post('/api/auth/signin', async (req, res) => {
   } catch (error) {
     console.error('Signin error:', error.message);
     res.status(500).json({ success: false, error: 'Unable to sign in.' });
+  }
+});
+
+app.put('/api/auth/profile', async (req, res) => {
+  try {
+    const { currentEmail, newEmail, newName } = req.body;
+    if (!currentEmail || !newEmail || !newName) {
+      return res.status(400).json({ success: false, error: 'Current email, new email, and name are required.' });
+    }
+    const cleanCurrent = currentEmail.toLowerCase().trim();
+    const cleanNew = newEmail.toLowerCase().trim();
+    const cleanName = newName.trim();
+
+    if (mongoose.connection.readyState === 1) {
+      const user = await User.findOne({ email: cleanCurrent });
+      if (!user) {
+        return res.status(404).json({ success: false, error: 'User account not found.' });
+      }
+
+      if (cleanNew !== cleanCurrent) {
+        const existing = await User.findOne({ email: cleanNew });
+        if (existing) {
+          return res.status(400).json({ success: false, error: 'The new email address is already in use by another account.' });
+        }
+      }
+
+      user.name = cleanName;
+      user.email = cleanNew;
+      await user.save();
+
+      // If email changed, migrate all past posts to the new email
+      if (cleanNew !== cleanCurrent) {
+        await Post.updateMany({ userId: cleanCurrent }, { userId: cleanNew });
+      }
+
+      return res.json({
+        success: true,
+        user: { id: user._id, email: user.email, name: user.name },
+      });
+    } else {
+      return res.json({
+        success: true,
+        user: { id: cleanNew, email: cleanNew, name: cleanName },
+      });
+    }
+  } catch (error) {
+    console.error('Profile update error:', error.message);
+    res.status(500).json({ success: false, error: error.message || 'Unable to update profile.' });
   }
 });
 
