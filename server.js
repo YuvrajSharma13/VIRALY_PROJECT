@@ -228,6 +228,18 @@ async function generateWithGemini({ prompt }) {
     console.warn(`models.generateContent fallback: ${err.message}`);
   }
 
+  // 3. Try gemini-1.5-flash fallback if available
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: prompt,
+    });
+    const content = response.text?.trim();
+    if (content) return content;
+  } catch (err) {
+    console.warn(`gemini-1.5-flash fallback: ${err.message}`);
+  }
+
   throw new Error('Gemini returned an empty response or could not process the request. Check your GEMINI_API_KEY in Render.');
 }
 
@@ -352,6 +364,178 @@ app.get('/api/analytics', async (req, res) => {
   } catch (error) {
     console.error('Analytics error:', error.message);
     res.status(500).json({ success: false, error: 'Unable to build analytics.' });
+  }
+});
+
+// --- NEW: CALENDAR ACTIVITY MAP ENDPOINT ---
+app.get('/api/calendar', async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId query parameter is required.' });
+    }
+
+    let posts;
+    if (mongoose.connection.readyState === 1) {
+      posts = await Post.find({ userId }).sort({ createdAt: -1 }).lean();
+    } else {
+      const localRecords = await readLocalHistory();
+      posts = localRecords.filter((record) => record.userId === userId);
+    }
+
+    const calendar = {};
+    posts.forEach((post) => {
+      const dateKey = new Date(post.createdAt).toISOString().split('T')[0];
+      if (!calendar[dateKey]) {
+        calendar[dateKey] = [];
+      }
+      calendar[dateKey].push({
+        _id: post._id,
+        sourceType: post.sourceType,
+        sourceInput: post.sourceInput,
+        customInstructions: post.customInstructions,
+        generatedContent: post.generatedContent,
+        selectedFormats: post.selectedFormats,
+        selectedTone: post.selectedTone,
+        createdAt: post.createdAt,
+      });
+    });
+
+    res.json({
+      success: true,
+      calendar,
+      stats: {
+        totalPosts: posts.length,
+        activeDays: Object.keys(calendar).length,
+      },
+    });
+  } catch (error) {
+    console.error('Calendar error:', error.message);
+    res.status(500).json({ success: false, error: 'Unable to retrieve calendar data.' });
+  }
+});
+
+// --- NEW: AI CONTENT SCHEDULE SUGGESTIONS ENDPOINT ---
+app.post('/api/calendar/suggest', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) {
+      return res.status(400).json({ success: false, error: 'userId is required.' });
+    }
+
+    let recentPosts;
+    if (mongoose.connection.readyState === 1) {
+      recentPosts = await Post.find({ userId }).sort({ createdAt: -1 }).limit(10).lean();
+    } else {
+      const localRecords = await readLocalHistory();
+      recentPosts = localRecords.filter((record) => record.userId === userId).slice(0, 10);
+    }
+
+    const pastTopics = recentPosts
+      .map((p) => {
+        const topic = p.customInstructions || p.sourceInput?.substring(0, 150) || 'General content';
+        return `- Type: ${p.sourceType}, Formats: ${p.selectedFormats?.join(', ')}, Tone: ${p.selectedTone}, Topic: ${topic}`;
+      })
+      .join('\n');
+
+    const prompt = `You are VIRALY AI Content Strategist.
+Analyze the creator's historical content topics and themes:
+${pastTopics || 'No previous history yet. Generate a viral, high-growth 7-day content schedule for a modern content creator / entrepreneur.'}
+
+Create a personalized 7-day Content Schedule & Suggestions Plan for the upcoming week (Day 1 to Day 7).
+For each day, provide:
+1. Day & Strategic Theme (e.g. "Day 1 (Monday): Industry Mythbusting")
+2. Recommended Post Angle & Title
+3. Recommended Platform Format (e.g., twitter, linkedin, instagram, reel, script)
+4. A high-converting Hook (under 20 words)
+5. Topic Brief & Prompt (A 1-2 sentence instruction that the creator can use right away in the VIRALY studio)
+
+Output pure JSON format only, structured as an array of 7 objects with the exact keys:
+[
+  {
+    "day": "Day 1 (Monday)",
+    "theme": "Industry Insight & Deep Dive",
+    "title": "Title here",
+    "format": "linkedin",
+    "hook": "Hook sentence here",
+    "brief": "Detailed prompt instruction for the studio here"
+  }
+]`;
+
+    let suggestions = [];
+    try {
+      const aiContent = await generateWithGemini({ prompt });
+      const jsonMatch = aiContent.match(/\[[\s\S]*\]/);
+      if (jsonMatch) {
+        suggestions = JSON.parse(jsonMatch[0]);
+      } else {
+        suggestions = JSON.parse(aiContent);
+      }
+    } catch {
+      suggestions = [
+        {
+          day: "Day 1 (Monday)",
+          theme: "Authority & Deep Insight",
+          title: "Core Lessons & Frameworks",
+          format: "linkedin",
+          hook: "Most people in this space make this fundamental mistake until it's too late.",
+          brief: "Break down the top 3 principles that improved your workflow or niche expertise this month."
+        },
+        {
+          day: "Day 2 (Tuesday)",
+          theme: "Viral Hook / Short Video",
+          title: "Quick-fire Reel / Short Script",
+          format: "reel",
+          hook: "3 signs you're doing this wrong in 2026 (and how to fix it):",
+          brief: "Write a high-retention 30-second script breaking down a common pitfall and immediate fix."
+        },
+        {
+          day: "Day 3 (Wednesday)",
+          theme: "Step-by-step Playbook",
+          title: "Actionable Twitter / X Thread",
+          format: "twitter",
+          hook: "How to master this topic in 5 simple steps (bookmark this thread):",
+          brief: "Provide a 6-step actionable playbook with practical takeaways."
+        },
+        {
+          day: "Day 4 (Thursday)",
+          theme: "Behind The Scenes & Authenticity",
+          title: "Visual Story & Instagram Caption",
+          format: "instagram",
+          hook: "What they don't tell you about building consistency behind the scenes:",
+          brief: "A transparent, engaging breakdown of daily habits and systems."
+        },
+        {
+          day: "Day 5 (Friday)",
+          theme: "Weekly Synthesis & Curated Insights",
+          title: "High-value Professional Recap",
+          format: "linkedin",
+          hook: "3 realizations that completely shifted my perspective this week:",
+          brief: "Synthesize the most valuable insights from this week's experiments and research."
+        },
+        {
+          day: "Day 6 (Saturday)",
+          theme: "Contrarian Viewpoint",
+          title: "Engagement & Community Debate",
+          format: "twitter",
+          hook: "Unpopular opinion: this common standard advice is actually holding you back.",
+          brief: "Share an honest, contrarian viewpoint and invite your community to discuss."
+        },
+        {
+          day: "Day 7 (Sunday)",
+          theme: "Roadmap & Vision Ahead",
+          title: "Inspirational Short Script",
+          format: "script",
+          hook: "Starting tomorrow, focus on these 2 key levers only.",
+          brief: "A 40-second inspirational script focused on weekly goal clarity and execution."
+        }
+      ];
+    }
+
+    res.json({ success: true, suggestions });
+  } catch (error) {
+    console.error('Calendar suggestions error:', error.message);
+    res.status(500).json({ success: false, error: 'Unable to generate content schedule suggestions.' });
   }
 });
 
