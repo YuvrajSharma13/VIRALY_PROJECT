@@ -7,7 +7,6 @@ import History from "./pages/History";
 import Templates from "./pages/Templates";
 import Analytics from "./pages/Analytics";
 import Calendar from "./pages/Calendar";
-import Settings from "./pages/Settings";
 
 export default function App() {
   return (
@@ -24,7 +23,6 @@ export default function App() {
           <Route path="/history" element={<History />} />
           <Route path="/templates" element={<Templates />} />
           <Route path="/analytics" element={<Analytics />} />
-          <Route path="/settings" element={<Settings />} />
         </Route>
 
         {/* Global Fallback Protection */}

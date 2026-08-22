@@ -8,7 +8,6 @@ const sidebarLinks = [
   { icon: "◷", label: "History", id: "history", path: "/history" },
   { icon: "⚡", label: "Templates", id: "templates", path: "/templates" },
   { icon: "📊", label: "Analytics", id: "analytics", path: "/analytics" },
-  { icon: "⚙", label: "Settings", id: "settings", path: "/settings" },
 ];
 
 export default function LayoutShell() {
@@ -84,7 +83,6 @@ export default function LayoutShell() {
             {!collapsed && (
               <div style={s.userInfo}>
                 <span style={s.userName}>{dynamicName}</span>
-                <span style={s.userPlan}>Pro Plan</span>
               </div>
             )}
           </div>
@@ -159,7 +157,6 @@ const s = {
   avatar: { width: 32, height: 32, borderRadius: "50%", background: "#6b21a8", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 },
   userInfo: { display: "flex", flexDirection: "column", gap: 1, overflow: "hidden" },
   userName: { fontSize: 14, fontWeight: 700, color: "#111", whiteSpace: "nowrap" },
-  userPlan: { fontSize: 11, color: "#6b21a8", fontWeight: 600 },
   main: { flex: 1, padding: "48px 64px", overflowY: "auto", position: "relative", zIndex: 1 },
   topbar: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 40 },
   pageTitle: { fontSize: 36, fontWeight: 700, color: "#111", margin: "0 0 6px", letterSpacing: "-0.04em", fontFamily: "Times New Roman, Georgia, serif" },
